@@ -18,6 +18,9 @@ final class SquirrelApplicationDelegate: NSObject, NSApplicationDelegate, SPUSta
   var config: SquirrelConfig?
   var panel: SquirrelPanel?
   var enableNotifications = false
+  var globalASCIIMode: Bool?
+  var activeSessionId: RimeSessionId?
+  private var suppressedStatusOptions: [RimeSessionId: Set<String>] = [:]
   let updateController = SPUStandardUpdaterController(startingUpdater: true, updaterDelegate: nil, userDriverDelegate: nil)
   var supportsGentleScheduledUpdateReminders: Bool {
     true
@@ -62,6 +65,55 @@ final class SquirrelApplicationDelegate: NSObject, NSApplicationDelegate, SPUSta
     NotificationCenter.default.removeObserver(self)
     DistributedNotificationCenter.default().removeObserver(self)
     panel?.hide()
+  }
+
+  var globalASCIIEnabled: Bool {
+    config?.getBool("global_ascii") ?? false
+  }
+
+  func setGlobalASCIIMode(_ asciiMode: Bool) {
+    if globalASCIIEnabled {
+      globalASCIIMode = asciiMode
+    }
+  }
+
+  func recordActiveSessionASCIIMode(_ asciiMode: Bool, from sessionId: RimeSessionId) {
+    if globalASCIIEnabled && activeSessionId == sessionId {
+      globalASCIIMode = asciiMode
+    }
+  }
+
+  func effectiveGlobalASCIIMode(sessionMode: Bool) -> Bool {
+    guard globalASCIIEnabled else { return sessionMode }
+    if let mode = globalASCIIMode {
+      return mode
+    }
+    globalASCIIMode = sessionMode
+    return sessionMode
+  }
+
+  func suppressNextStatusMessage(for optionName: String, in sessionId: RimeSessionId) {
+    suppressedStatusOptions[sessionId, default: []].insert(optionName)
+  }
+
+  func shouldSuppressStatusMessage(for optionName: String, in sessionId: RimeSessionId) -> Bool {
+    guard suppressedStatusOptions[sessionId]?.remove(optionName) != nil else {
+      return false
+    }
+    if suppressedStatusOptions[sessionId]?.isEmpty == true {
+      suppressedStatusOptions[sessionId] = nil
+    }
+    return true
+  }
+
+  func activateSession(_ sessionId: RimeSessionId) {
+    activeSessionId = sessionId
+  }
+
+  func deactivateSession(_ sessionId: RimeSessionId) {
+    if activeSessionId == sessionId {
+      activeSessionId = nil
+    }
   }
 
   func deploy() {
@@ -161,6 +213,9 @@ final class SquirrelApplicationDelegate: NSObject, NSApplicationDelegate, SPUSta
       return
     }
 
+    if !globalASCIIEnabled {
+      globalASCIIMode = nil
+    }
     enableNotifications = config!.getString("show_notifications_when") != "never"
     if let panel = panel, let config = self.config {
       panel.load(config: config, forDarkMode: false)
@@ -253,6 +308,19 @@ private func notificationHandler(contextObject: UnsafeMutableRawPointer?, sessio
     }
     return
   }
+
+  if messageType == "option" {
+    let state = messageValue?.first != "!"
+    let optionName = if state {
+      messageValue
+    } else {
+      messageValue.map { String($0[$0.index(after: $0.startIndex)...]) }
+    }
+    if optionName == "ascii_mode" {
+      delegate.recordActiveSessionASCIIMode(state, from: sessionId)
+    }
+  }
+
   // off
   if !delegate.enableNotifications {
     return
@@ -274,7 +342,9 @@ private func notificationHandler(contextObject: UnsafeMutableRawPointer?, sessio
         let stateLabelShort = delegate.rimeAPI.get_state_label_abbreviated(sessionId, name, state, true)
         let longLabel = stateLabelLong.str.map { String(cString: $0) }
         let shortLabel = stateLabelShort.str.map { String(cString: $0) }
-        delegate.showStatusMessage(msgTextLong: longLabel, msgTextShort: shortLabel)
+        if !delegate.shouldSuppressStatusMessage(for: optionName, in: sessionId) {
+          delegate.showStatusMessage(msgTextLong: longLabel, msgTextShort: shortLabel)
+        }
       }
     }
   }

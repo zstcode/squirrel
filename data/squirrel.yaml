@@ -12,6 +12,9 @@ keyboard_layout: last
 # for veteran chord-typist
 chord_duration: 0.1  # seconds
 
+# Use global ascii status across apps and input sessions.
+global_ascii: false
+
 # options: always | never | appropriate
 show_notifications_when: appropriate
 
