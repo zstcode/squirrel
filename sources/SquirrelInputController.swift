@@ -43,6 +43,8 @@ final class SquirrelInputController: IMKInputController {
         return false
       }
     }
+    NSApp.squirrelAppDelegate.activateSession(session)
+    applyGlobalASCIIModeIfNeeded()
 
     self.client ?= sender as? IMKTextInput
     if let app = client?.bundleIdentifier(), currentApp != app {
@@ -179,6 +181,8 @@ final class SquirrelInputController: IMKInputController {
     }
     preedit = ""
     if session != 0 {
+      NSApp.squirrelAppDelegate.activateSession(session)
+      applyGlobalASCIIModeIfNeeded()
       let state = rimeAPI.get_option(session, "ascii_mode")
       let label = rimeAPI.get_state_label_abbreviated(session, "ascii_mode", state, true).asString
       NSApp.squirrelAppDelegate.updateStatusIcon(asciiMode: state, schemaLabel: label)
@@ -210,6 +214,9 @@ final class SquirrelInputController: IMKInputController {
   override func deactivateServer(_ sender: Any!) {
     hidePalettes()
     commitComposition(sender)
+    if session != 0 {
+      NSApp.squirrelAppDelegate.deactivateSession(session)
+    }
     client = nil
   }
 
@@ -369,6 +376,9 @@ private extension SquirrelInputController {
     }
     if let appOptions = NSApp.squirrelAppDelegate.config?.getAppOptions(currentApp) {
       for (key, value) in appOptions {
+        if NSApp.squirrelAppDelegate.globalASCIIEnabled && key == "ascii_mode" {
+          continue
+        }
         print("set app option: \(key) = \(value)")
         rimeAPI.set_option(session, key, value)
       }
@@ -378,10 +388,24 @@ private extension SquirrelInputController {
         rimeAPI.set_property(session, "client_app", name)
       }
     }
+    applyGlobalASCIIModeIfNeeded()
+  }
+
+  func applyGlobalASCIIModeIfNeeded() {
+    let delegate = NSApp.squirrelAppDelegate
+    guard delegate.globalASCIIEnabled, session != 0, rimeAPI.find_session(session) else { return }
+
+    let current = rimeAPI.get_option(session, "ascii_mode")
+    let target = delegate.effectiveGlobalASCIIMode(sessionMode: current)
+    if current != target {
+      delegate.suppressNextStatusMessage(for: "ascii_mode", in: session)
+      rimeAPI.set_option(session, "ascii_mode", target)
+    }
   }
 
   func destroySession() {
     if session != 0 {
+      NSApp.squirrelAppDelegate.deactivateSession(session)
       _ = rimeAPI.destroy_session(session)
       session = 0
     }
@@ -404,6 +428,7 @@ private extension SquirrelInputController {
       let isVimBackInCommandMode = rimeKeycode == XK_Escape || ((rimeModifiers & kControlMask.rawValue != 0) && (rimeKeycode == XK_c || rimeKeycode == XK_C || rimeKeycode == XK_bracketleft))
       if isVimBackInCommandMode && rimeAPI.get_option(session, "vim_mode") &&
           !rimeAPI.get_option(session, "ascii_mode") {
+        NSApp.squirrelAppDelegate.setGlobalASCIIMode(true)
         rimeAPI.set_option(session, "ascii_mode", true)
       }
     } else {
@@ -594,7 +619,10 @@ private extension SquirrelInputController {
     guard let enableASCII = notification.object as? Bool else { return }
     guard session != 0 && rimeAPI.find_session(session) else { return }
 
-    rimeAPI.set_option(session, "ascii_mode", enableASCII)
+    NSApp.squirrelAppDelegate.setGlobalASCIIMode(enableASCII)
+    if rimeAPI.get_option(session, "ascii_mode") != enableASCII {
+      rimeAPI.set_option(session, "ascii_mode", enableASCII)
+    }
     rimeUpdate()
   }
 
@@ -602,7 +630,8 @@ private extension SquirrelInputController {
     guard client != nil else { return }
     guard session != 0 && rimeAPI.find_session(session) else { return }
 
-    let isASCIIMode = rimeAPI.get_option(session, "ascii_mode")
+    let current = rimeAPI.get_option(session, "ascii_mode")
+    let isASCIIMode = NSApp.squirrelAppDelegate.effectiveGlobalASCIIMode(sessionMode: current)
     let status = isASCIIMode ? "ascii" : "nascii"
 
     DistributedNotificationCenter.default().postNotificationName(
